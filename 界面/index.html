@@ -1,20 +1,51 @@
 <!doctype html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="workbench-token" content="__LOCAL_TOKEN__">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Local Post Studio · 界面预览</title>
+  <title>Local Post Studio</title>
+  <script>
+    (() => {
+      try {
+        const m = localStorage.getItem('local-post-theme-mode') || 'auto';
+        const dark = m === 'dark' || (m === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+        document.documentElement.dataset.themeMode = m;
+      } catch (_) {
+        document.documentElement.dataset.theme = 'dark';
+      }
+    })();
+  </script>
   <link rel="stylesheet" href="studio.css">
 </head>
-<body>
+<body class="hide-art">
   <header class="titlebar">
-    <div class="wordmark"><span class="brand-icon" aria-hidden="true">◈</span> Local Post Studio</div>
-    <div class="project-name"><button data-action="project-list" id="studio-button">项目</button> <strong id="studio-name">原工作台</strong></div>
-    <div class="palette" role="img" aria-label="陶土、米白、蓝灰与炭黑色板">
-      <i class="clay"></i><i class="ivory"></i><i class="blue"></i><i class="ink"></i>
+    <div class="title-left">
+      <div class="wordmark">
+        <span class="brand-icon" aria-hidden="true">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="3.2" y="3.2" width="9.6" height="9.6" rx="2.4" transform="rotate(45 8 8)" stroke="currentColor" stroke-width="1.7"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>
+        </span>
+        <span class="wordmark-text">Local Post</span>
+      </div>
+      <div class="project-name">
+        <button data-action="project-list" id="studio-button" title="切换或管理项目">
+          <svg class="btn-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.8l1.3 1.5h4.9A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5v-7Z" stroke="currentColor" stroke-width="1.35"/></svg>
+          <span class="project-btn-label">项目</span>
+          <strong id="studio-name">原工作台</strong>
+          <svg class="btn-chevron" width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
     </div>
-    <div class="title-actions"><span id="save-state">界面预览</span><button id="locale" lang="en" aria-label="切换界面语言">EN</button><button id="settings">界面设置</button></div>
+    <div class="title-actions">
+      <span id="save-state" class="save-pill">就绪</span>
+      <button id="theme-toggle" type="button" aria-label="切换外观模式" title="切换外观：跟随系统 / 深色 / 浅色">自动</button>
+      <button id="locale" lang="en" aria-label="切换界面语言">EN</button>
+      <button id="settings" aria-label="界面与资源设置" title="界面与资源设置">
+        <svg class="btn-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="2.2" stroke="currentColor" stroke-width="1.35"/><path d="M8 1.8v1.5M8 12.7v1.5M1.8 8h1.5M12.7 8h1.5M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/></svg>
+        <span>设置</span>
+      </button>
+    </div>
   </header>
   <nav id="navigation" aria-label="工作区"></nav>
   <main>
@@ -44,20 +75,45 @@
       </g>
     </svg>
     <aside class="library" aria-labelledby="library-label">
-      <div class="library-title"><h2 id="library-label">项目素材</h2><div class="library-actions"><button id="expand-library" aria-expanded="false" aria-label="展开素材库" title="展开素材库">⤢</button><button id="add" aria-label="导入素材" title="导入素材">＋</button></div></div>
-      <div class="library-organize"><button id="new-group">＋ 新建文件夹</button><button id="trash">已移除</button></div>
+      <div class="library-title">
+        <h2 id="library-label">项目素材</h2>
+        <div class="library-actions">
+          <button id="expand-library" aria-expanded="false" aria-label="展开素材库" title="展开素材库">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5 9 7M2.5 13.5 7 9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button id="add" class="add-btn" aria-label="导入素材" title="导入素材">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 3.2v9.6M3.2 8h9.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="library-organize">
+        <button id="new-group">＋ 新建文件夹</button>
+        <button id="trash">已移除</button>
+      </div>
       <input id="search" type="search" placeholder="搜索素材" aria-label="搜索素材">
-      <div class="library-tools"><label><input type="checkbox" id="select-all"> 全选</label><select id="sort" aria-label="排序"><option value="recent">导入顺序</option><option value="name">按名称</option><option value="size">按大小</option></select></div>
+      <div class="library-tools">
+        <label><input type="checkbox" id="select-all"> 全选</label>
+        <select id="sort" aria-label="排序">
+          <option value="recent">导入顺序</option>
+          <option value="name">按名称</option>
+          <option value="size">按大小</option>
+        </select>
+      </div>
       <p class="library-hint">空白处拖动框选 · 选中后拖入文件夹</p>
       <div id="media-list"></div>
       <div id="batch" class="batch"></div>
-      <button id="legacy" class="sample-link">导入旧版项目</button>
-      <button id="samples" class="sample-link" hidden>载入示例项目</button>
+      <div class="library-footer">
+        <button id="legacy" class="sample-link">导入旧版项目</button>
+        <button id="samples" class="sample-link" hidden>载入示例项目</button>
+      </div>
     </aside>
     <div class="resize" id="library-resize" role="separator" aria-label="调整素材栏宽度" aria-orientation="vertical" tabindex="0"></div>
     <section id="workspace" aria-label="活动工作区"></section>
   </main>
-  <footer><span>本地处理</span><span class="footer-right system-usage"><span>CPU <strong id="cpu-usage">—</strong></span><span>内存 <strong id="memory-usage">—</strong></span></span></footer>
+  <footer>
+    <span class="status-indicator"><i class="status-dot" aria-hidden="true"></i><span>本地处理</span></span>
+    <span class="footer-right system-usage"><span>CPU <strong id="cpu-usage">—</strong></span><span>内存 <strong id="memory-usage">—</strong></span></span>
+  </footer>
   <dialog id="modal" aria-labelledby="modal-title"><form method="dialog" class="panel-head"><div><p class="picker-eyebrow">CODEC LIBRARY</p><h2 id="modal-title"></h2></div><button aria-label="关闭"><span class="picker-close-icon" aria-hidden="true">×</span><span class="generic-close">关闭</span></button></form><div id="modal-content"></div></dialog>
   <dialog id="color-picker" class="color-picker-dialog" aria-labelledby="color-picker-title">
     <form method="dialog" class="panel-head">

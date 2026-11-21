@@ -1,7 +1,7 @@
 {
-  "name": "interview-workbench",
-  "productName": "采访工作台",
-  "version": "0.1.0",
+  "name": "local-post-studio",
+  "productName": "Local Post Studio",
+  "version": "0.2.1-mac",
   "main": "main.cjs",
   "private": true
 }

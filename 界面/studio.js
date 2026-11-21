@@ -60,12 +60,50 @@ let batchSerial = 0;
 let toastTimer;
 let limits = {jobs:'', threads:''};
 let reduceMotion = false;
-let darkMode = true;
-function applyTheme() {
-  document.documentElement.dataset.theme = darkMode ? 'dark' : 'light';
+let isMacPlatform = /Mac|Macintosh|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || '');
+let defaultCaptionFontName = isMacPlatform ? 'PingFang SC' : 'Microsoft YaHei';
+let showWorkspaceArt = false;
+let themeMode = 'auto';
+const systemDarkQuery = window.matchMedia?.('(prefers-color-scheme: dark)');
+let darkMode = systemDarkQuery ? systemDarkQuery.matches : true;
+try {
+  const savedTheme = localStorage.getItem('local-post-theme-mode');
+  if (savedTheme === 'auto' || savedTheme === 'dark' || savedTheme === 'light') themeMode = savedTheme;
+  showWorkspaceArt = localStorage.getItem('local-post-show-art') === 'true';
+} catch (_) {}
+const themeIcons = {
+  auto: '<svg class="btn-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.4"/><path d="M8 2a6 6 0 0 1 0 12V2Z" fill="currentColor"/></svg>',
+  dark: '<svg class="btn-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13.2 9.8A5.6 5.6 0 0 1 6.2 2.8a5.8 5.8 0 1 0 7 7Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>',
+  light: '<svg class="btn-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="3" stroke="currentColor" stroke-width="1.4"/><path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M12.6 3.4l-1.1 1.1M4.5 11.5l-1.1 1.1" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/></svg>',
+};
+function updateThemeButton() {
+  const button = byId('theme-toggle');
+  if (!button) return;
+  const label = themeMode === 'auto' ? '自动' : themeMode === 'dark' ? '深色' : '浅色';
+  button.innerHTML = (themeIcons[themeMode] || '') + '<span>' + translate(label) + '</span>';
+  button.dataset.themeMode = themeMode;
 }
+function applyTheme() {
+  darkMode = themeMode === 'auto' ? (systemDarkQuery ? systemDarkQuery.matches : true) : themeMode === 'dark';
+  document.documentElement.dataset.theme = darkMode ? 'dark' : 'light';
+  document.documentElement.dataset.themeMode = themeMode;
+  updateThemeButton();
+  window.localPost?.setAppearance?.(themeMode);
+}
+systemDarkQuery?.addEventListener?.('change', () => { if (themeMode === 'auto') applyTheme(); });
 try { reduceMotion = localStorage.getItem('local-post-reduce-motion') === 'true'; } catch (_) {}
 document.body.classList.toggle('reduce-motion', reduceMotion);
+document.body.classList.toggle('hide-art', !showWorkspaceArt);
+document.body.classList.toggle('macos-desktop', Boolean(window.localPost?.isMacDesktop));
+function chooseNativeDirectory() {
+  if (window.localPost?.chooseOutputDirectory) return window.localPost.chooseOutputDirectory();
+  return api('choose-directory', {}).then(res => res?.path || null);
+}
+function openNativeDirectory(directory) {
+  if (window.localPost?.openOutputDirectory) return window.localPost.openOutputDirectory(directory);
+  return api('open-directory', {directory}).then(() => '').catch(error => error.message);
+}
+applyTheme();
 const visibleClips = () => clips.filter(clip => !clip.removed);
 const selectedClips = () => visibleClips().filter(clip => clip.selected);
 const effective = clip => ({...defaults, ...clip.overrides});
@@ -162,7 +200,8 @@ const captionSize = settings => Number.isInteger(settings.captionSize) && settin
 const captionMeasure = document.createElement('canvas').getContext('2d');
 const captionGraphemes = new Intl.Segmenter(undefined, {granularity:'grapheme'});
 const captionPages = new WeakMap();
-const captionFontFamily = settings => JSON.stringify(settings.captionFont || 'Microsoft YaHei') + ', "Microsoft YaHei", sans-serif';
+const captionFontFamily = settings =>
+  JSON.stringify(settings.captionFont || defaultCaptionFontName) + ', ' + JSON.stringify(defaultCaptionFontName) + ', -apple-system, BlinkMacSystemFont, sans-serif';
 const captionWidthRatio = x => Math.min(.88,2*Math.min(x,1-x)-.04);
 
 function wrapCaption(text, width) {
@@ -404,12 +443,20 @@ function player() {
     const empty = active === emptyClip;
     const message = empty ? '尚未导入素材' : active.status === '缺失' ? '素材文件缺失' :
       ['复制中','排队中'].includes(active.status) ? '正在准备素材' : '此素材暂无可播放画面';
-    return `<div class="panel"><div class="panel-head"><h2>素材预览</h2></div>
-      <div class="viewer empty-viewer"><div class="empty-caption"><span>${message}</span>
-      ${empty ? '<button data-action="import">导入素材</button>' : ''}</div></div></div>`;
+    return `<div class="panel viewer-panel"><div class="panel-head"><h2>素材预览</h2><span class="viewer-badge">${empty ? '待导入' : '本地文件'}</span></div>
+      <div class="viewer empty-viewer"><div class="empty-caption">${empty
+        ? `<div class="empty-drop-card">
+            <div class="empty-icon" aria-hidden="true">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="14" rx="2.6" stroke="currentColor" stroke-width="1.6"/><path d="M7 5v14M17 5v14M3 9.5h4M17 9.5h4M3 14.5h4M17 14.5h4M10.5 9.8l4 2.2-4 2.2V9.8Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+            </div>
+            <strong>${message}</strong>
+            <span class="empty-sub">支持 MOV、MP4、MKV、MXF、ProRes 及主流相机 Log 素材</span>
+            <button class="primary" data-action="import">导入素材</button>
+          </div>`
+        : `<span>${message}</span>`}</div></div></div>`;
   }
   const preview = `<video id="player" playsinline preload="${[2,3].includes(page) ? 'auto' : 'metadata'}" ${active.sample ? 'poster="review-still.jpg"' : ''} src="${escapeHtml(active.url)}"></video>`;
-    return `<div class="panel"><div class="panel-head"><h2>素材预览</h2><span class="muted">${active.sample ? '示例素材' : '本地文件'}</span></div>
+    return `<div class="panel viewer-panel"><div class="panel-head"><h2>素材预览</h2><span class="viewer-badge">${active.sample ? '示例素材' : '本地文件'}</span></div>
     <div class="viewer preview-viewer${active.sample ? ' sample-viewer' : ''}">${preview}
     <div id="preview-unavailable" class="empty-caption" hidden><span>${active.sourceInfo && !active.sourceInfo.video ? '此素材只有音频' : '此素材暂无可播放画面'}</span></div>
     ${page === 2 ? '<canvas id="transformed-view" class="transformed-view" hidden></canvas><p id="color-preview-status" class="preview-status" hidden></p>' : ''}
@@ -450,7 +497,7 @@ function importPage() {
     previewLayout(panel('素材属性', facts() +
       `<label>试听与识别音轨 <select id="track" ${(active.tracks || []).length ? '' : 'disabled'}>
       ${(active.tracks || []).map(track => `<option value="${track.index}">音轨 ${track.index + 1} · ${escapeHtml(track.codec || '')} ${escapeHtml(track.language || '')}</option>`).join('') || '<option value="0">未发现音轨</option>'}</select></label>
-      <p class="notice">素材复制到开发版项目目录，原文件保持不变。</p>`)) + mediaBatch();
+      <p class="notice">素材复制到本地项目库，原文件保持不变。</p>`)) + mediaBatch();
 }
 function progressMeter(key, value, label, style = '') {
   const known = Number.isFinite(value);
@@ -605,7 +652,7 @@ function videoAudioLabel(settings) {
   return {MP4:'AAC',WebM:'Opus',MXF:'PCM 24-bit / 48 kHz'}[containerFor(settings)] || settings.audio;
 }
 
-const encoderEngines = {cpu:'CPU 软件编码',qsv:'Intel Quick Sync',nvenc:'NVIDIA NVENC',amf:'AMD AMF',none:'无需重新编码'};
+const encoderEngines = {cpu:'CPU 软件编码',videotoolbox:'Apple VideoToolbox',qsv:'Intel Quick Sync',nvenc:'NVIDIA NVENC',amf:'AMD AMF',none:'无需重新编码'};
 const encoderModes = {auto:'自动',cpu:'CPU',gpu:'GPU'};
 const encoderChecks = new Map();
 function encoderSelection(clip, payload) {
@@ -911,7 +958,7 @@ function transcodePage() {
       ['位深／采样',sourceSpec(active),outputPixels],
       ['色彩',source ? [source.primaries,source.transfer,source.matrix,source.range].map(x=>x || '未知').join(' / ') : '未知',
        current.transform ? colorLabel(current) : '不转换'],
-      ['音频',active.audio,audio === '不输出音频' ? audio : [audio,track].join(' · ')],
+      ['音频',active.audio,audio === '不输出音频' || audio === track ? audio : [audio,track].join(' · ')],
       ['线程上限','—',current.threads === 'auto' ? '自动' : current.threads]
     ],['属性','源素材','计划输出']) +
     `<p class="notice">${notices.filter(Boolean).join(' ')}</p>`);
@@ -1399,7 +1446,9 @@ function subtitleTimelinePanel() {
     </div>
     <input id="subtitle-timeline-pan" type="range" min="0" step="0.001" aria-label="移动时间轴视图">
     <p class="muted subtitle-timeline-note">拖两端裁切，拖中间移动。选中手柄后用方向键微调，按住 Shift 可按 1 毫秒调整。</p>
-    <p class="muted subtitle-timeline-note">空格播放或暂停 · ← / → 跳 15 秒（手柄上加 Ctrl）· Alt+N 补字幕 · Ctrl+C / Ctrl+V 复制和粘贴字幕</p>
+    <p class="muted subtitle-timeline-note">${isMacPlatform
+      ? '空格播放或暂停 · ← / → 跳 15 秒（手柄上加 ⌘）· ⌥N 补字幕 · ⌘C / ⌘V 复制和粘贴字幕'
+      : '空格播放或暂停 · ← / → 跳 15 秒（手柄上加 Ctrl）· Alt+N 补字幕 · Ctrl+C / Ctrl+V 复制和粘贴字幕'}</p>
   </section>`;
 }
 
@@ -1642,10 +1691,10 @@ function subtitlesPage() {
     (active.rows.length ? '' : ' disabled') + '>导出 TXT</button><label><input id="speakers" type="checkbox"> 包含说话人</label></div></div>',
     captionStylePicker() + '<div class="panel settings-inline"><label><input id="loop" type="checkbox"> 循环选中句</label>' +
     field('模型','model',['Base','Medium.en','Large-v3-turbo'],effective(active).model) +
-    `<label>识别设备<select data-field="recognitionBackend">
+    (isMacPlatform && !npuRecognitionReady ? '' : `<label>识别设备<select data-field="recognitionBackend">
       <option value="cpu">CPU</option><option value="npu" ${!npuRecognitionReady || effective(active).model !== 'Base' ? 'disabled' : ''}
       ${npuRecognitionReady && effective(active).model === 'Base' && effective(active).recognitionBackend === 'npu' ? 'selected' : ''}>Intel NPU（实验）</option></select></label>
-      <span class="muted">NPU 实验仅支持 Whisper Base。</span>` +
+      <span class="muted">NPU 实验仅支持 Whisper Base。</span>`) +
     '<button data-action="candidate"' + (active.rows.length ? '' : ' disabled') + '>局部重识别与对比</button></div>' +
     '<div class="panel settings-inline">' + field('识别语言','language',effective(active).model === 'Medium.en' ? ['英语'] : ['自动检测','中文','英语'],effective(active).language) +
     '<button data-action="transcribe-real"' + (!active.mediaId || active.status !== '已就绪' ? ' disabled' : '') + '>生成初稿</button>' +
@@ -1733,9 +1782,17 @@ function exportPage() {
 }
 
 let colorPreview, currentPlayerClip, playerEvents, renderedPage;
+const navIcons = [
+  '<svg class="nav-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2" stroke="currentColor" stroke-width="1.35"/><path d="M5.5 3v10M10.5 3v10" stroke="currentColor" stroke-width="1.2"/></svg>',
+  '<svg class="nav-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.5 5h11M2.5 11h11" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/><circle cx="6" cy="5" r="1.7" fill="currentColor"/><circle cx="10.5" cy="11" r="1.7" fill="currentColor"/></svg>',
+  '<svg class="nav-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="5.7" r="3" stroke="currentColor" stroke-width="1.3"/><circle cx="5.7" cy="9.8" r="3" stroke="currentColor" stroke-width="1.3"/><circle cx="10.3" cy="9.8" r="3" stroke="currentColor" stroke-width="1.3"/></svg>',
+  '<svg class="nav-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2" y="3.2" width="12" height="9.6" rx="2" stroke="currentColor" stroke-width="1.35"/><path d="M4.5 9.2h4.2M10.3 9.2h1.2M4.5 6.8h2M8 6.8h3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
+  '<svg class="nav-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 10.5V2.8m0 0L5.2 5.6M8 2.8l2.8 2.8M3 10.5v1.8A1.2 1.2 0 0 0 4.2 13.5h7.6a1.2 1.2 0 0 0 1.2-1.2v-1.8" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  '<svg class="nav-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.2 8.5h2.5l1.5-4 2.4 7 1.6-3h3.6" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+];
 function render() {
   byId('navigation').innerHTML = pages.map((label,index) =>
-    `<button data-page="${index}" ${index === page ? 'aria-current="page"' : ''}>${label}${index === tasksPageIndex ? '<span id="task-dot" class="task-dot" hidden><span class="task-dot-label">有进行中的任务</span></span>' : ''}</button>`).join('');
+    `<button data-page="${index}" ${index === page ? 'aria-current="page"' : ''}>${navIcons[index] || ''}<span>${label}</span>${index === tasksPageIndex ? '<span id="task-dot" class="task-dot" hidden><span class="task-dot-label">有进行中的任务</span></span>' : ''}</button>`).join('');
   const workspace = byId('workspace');
   stopWaveform?.();
   stopWaveform = null;
@@ -2267,7 +2324,8 @@ document.addEventListener('keydown', event => {
       (!target?.closest('button,summary,a') || target.closest('[data-action=play],[data-timeline-mode]'))) {
     event.preventDefault();
     if (!event.repeat) togglePlayback();
-  } else if (['ArrowLeft','ArrowRight'].includes(event.key) && !event.altKey && !event.metaKey && !event.shiftKey &&
+  } else if (['ArrowLeft','ArrowRight'].includes(event.key) && !event.altKey && !event.shiftKey &&
+      (isMacPlatform ? !event.ctrlKey : !event.metaKey) &&
       video.readyState >= 1 && Number.isFinite(video.duration)) {
     event.preventDefault();
     if (byId('loop')) byId('loop').checked = false;
@@ -2311,9 +2369,15 @@ function download(srt) {
     const text = (!srt && withSpeakers && speaker ? speaker + '：' : '') + row.text;
     return srt ? (index + 1) + '\n' + stamp(row.start) + ' --> ' + stamp(row.end) + '\n' + text : timecode(row.start) + '  ' + text;
   });
+  const content = lines.join(srt ? '\n\n' : '\n') + '\n';
+  const filename = (active.name || '字幕').replace(/\.[^.]+$/, '').replace(/[\\/:*?"<>|]/g, '_') + '.' + (srt ? 'srt' : 'txt');
+  if (window.localPost?.saveTextFile) {
+    window.localPost.saveTextFile(filename, content).then(saved => { if (saved) toast('已导出'); }).catch(err => toast(err?.message || '导出失败'));
+    return;
+  }
   const link = document.createElement('a');
-  link.href = URL.createObjectURL(new Blob([lines.join(srt ? '\n\n' : '\n') + '\n'], {type:'text/plain;charset=utf-8'}));
-  link.download = (active.name || '字幕').replace(/\.[^.]+$/, '').replace(/[\\/:*?"<>|]/g, '_') + '.' + (srt ? 'srt' : 'txt');
+  link.href = URL.createObjectURL(new Blob([content], {type:'text/plain;charset=utf-8'}));
+  link.download = filename;
   link.click();
   setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
@@ -2360,7 +2424,7 @@ function persist() {
   clearTimeout(saveTimer);
   if (studioId === 'none') return Promise.resolve();
   const version = changeVersion;
-  const snapshot = structuredClone({version:1, active: active.id || null, batchSerial, serial, groups, defaults, exportConfig, darkMode, previewResolution, reduceMotion,
+  const snapshot = structuredClone({version:1, active: active.id || null, batchSerial, serial, groups, defaults, exportConfig, darkMode, themeMode, previewResolution, reduceMotion,
     clips: clips.map(({url, progress, ...clip}) => ({...clip}))});
   const route = 'studio-state?studio='+studioId;
   saveChain = saveChain.catch(() => {}).then(() => api(route, snapshot)).then(() => {
@@ -2732,7 +2796,9 @@ byId('add').onclick = () => byId('files').click();
 function updateLibraryToggle() {
   const button = byId('expand-library');
   const label = libraryExpanded ? '收起素材库' : '展开素材库';
-  button.textContent = libraryExpanded ? '⤡' : '⤢';
+  button.innerHTML = libraryExpanded
+    ? '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M10 6h3.5M10 6V2.5M6 10H2.5M6 10v3.5M10 6l3.5-3.5M6 10l-3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+    : '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5 9 7M2.5 13.5 7 9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   button.setAttribute('aria-expanded', String(libraryExpanded));
   button.setAttribute('aria-label', translate(label));
   button.title = translate(label);
@@ -2886,12 +2952,28 @@ mediaList.addEventListener('dragend', () => {
   draggedClipIds = null;
   mediaList.querySelectorAll('.drop-target,.dragging').forEach(node => node.classList.remove('drop-target','dragging'));
 });
+byId('theme-toggle')?.addEventListener('click', () => {
+  const order = ['auto', 'dark', 'light'];
+  themeMode = order[(order.indexOf(themeMode) + 1) % order.length];
+  try { localStorage.setItem('local-post-theme-mode', themeMode); } catch (_) {}
+  applyTheme();
+  if (projectReady) scheduleSave();
+});
 byId('settings').onclick = () => modal('界面与资源设置', `<div class="library-scroll settings-library"><section class="library-box fields"><h3>外观</h3>
+  <label>外观模式<select id="theme-mode">
+    <option value="auto" ${themeMode === 'auto' ? 'selected' : ''}>跟随系统</option>
+    <option value="dark" ${themeMode === 'dark' ? 'selected' : ''}>深色模式</option>
+    <option value="light" ${themeMode === 'light' ? 'selected' : ''}>浅色模式</option>
+  </select></label>
   <label>工作区导航<select id="nav-position"><option value="top">顶部</option><option value="bottom" ${document.body.classList.contains('bottom') ? 'selected' : ''}>底部</option></select></label>
+  <label class="check"><input id="show-workspace-art" type="checkbox" ${showWorkspaceArt ? 'checked' : ''}> 显示背景装饰线</label>
   <label class="check"><input id="reduce-motion" type="checkbox" ${reduceMotion ? 'checked' : ''}> 减少动态效果</label>
-  <label class="check"><input id="dark-mode" type="checkbox" role="switch" ${darkMode ? 'checked' : ''} ${projectReady ? '' : 'disabled'}> 深色模式</label>
-  </section><section class="library-box fields"><h3>资源说明</h3><p class="notice">当前策略：文件复制最多 1 项、媒体分析最多 2 项；识别、转码和预览代理共享单个计算任务位。转码线程可在转码页设置，自动模式按逻辑处理器调整；由 Windows 调度核心。</p>
-  <p class="notice">GPU 编码：转码页可选自动、CPU 或 GPU，可用性按本机和编码档位检测。色彩预览可在兼容素材上使用 Intel Quick Sync 解码。字幕默认用 CPU；具备运行条件时，Base 可选实验性的 Intel NPU。</p></section></div>` + modalDone());
+  </section><section class="library-box fields"><h3>资源说明</h3><p class="notice">${isMacPlatform
+    ? '当前策略：文件复制最多 1 项、媒体分析最多 2 项；识别、转码和预览代理共享单个计算任务位。转码线程可在转码页设置，自动模式按逻辑处理器调整；由 macOS 调度核心。'
+    : '当前策略：文件复制最多 1 项、媒体分析最多 2 项；识别、转码和预览代理共享单个计算任务位。转码线程可在转码页设置，自动模式按逻辑处理器调整；由 Windows 调度核心。'}</p>
+  <p class="notice">${isMacPlatform
+    ? 'GPU 编码：转码页可选自动、CPU 或 GPU，在 macOS 上支持 Apple VideoToolbox 硬件编码并按规格实测校验。色彩预览可在兼容素材上使用 VideoToolbox 硬件解码。离线字幕识别使用本地 Whisper 模型。'
+    : 'GPU 编码：转码页可选自动、CPU 或 GPU，可用性按本机和编码档位检测。色彩预览可在兼容素材上使用 Intel Quick Sync 解码。字幕默认用 CPU；具备运行条件时，Base 可选实验性的 Intel NPU。'}</p></section></div>` + modalDone());
 function openTasks() {
   if (page !== tasksPageIndex) {
     page = tasksPageIndex;
@@ -2930,10 +3012,20 @@ document.addEventListener('change', event => {
     selectPlaybackTrack(active);
   } else if (el.id === 'nav-position') {
     document.body.classList.toggle('bottom', el.value === 'bottom');
-  } else if (el.id === 'dark-mode') {
-    darkMode = el.checked;
+  } else if (el.id === 'theme-mode') {
+    themeMode = el.value;
+    try { localStorage.setItem('local-post-theme-mode', themeMode); } catch (_) {}
     applyTheme();
-    scheduleSave();
+    if (projectReady) scheduleSave();
+  } else if (el.id === 'show-workspace-art') {
+    showWorkspaceArt = el.checked;
+    document.body.classList.toggle('hide-art', !showWorkspaceArt);
+    try { localStorage.setItem('local-post-show-art', String(showWorkspaceArt)); } catch (_) {}
+  } else if (el.id === 'dark-mode') {
+    themeMode = el.checked ? 'dark' : 'light';
+    try { localStorage.setItem('local-post-theme-mode', themeMode); } catch (_) {}
+    applyTheme();
+    if (projectReady) scheduleSave();
   } else if (el.id === 'reduce-motion') {
     reduceMotion = el.checked;
     document.body.classList.toggle('reduce-motion', reduceMotion);
@@ -3161,7 +3253,7 @@ document.addEventListener('click', event => {
   }
   if (button.dataset.exportOpen) {
     const job = exportJobs.find(item => item.id === button.dataset.exportOpen);
-    if (job && window.localPost) window.localPost.openOutputDirectory(job.destination).then(error => { if (error) toast(error); });
+    if (job) openNativeDirectory(job.destination).then(error => { if (error) toast(error); });
   }
   if (button.dataset.exportPreview) {
     button.disabled = true;
@@ -3288,12 +3380,11 @@ document.addEventListener('click', event => {
     scheduleSave(); render(); toast('已应用字幕方式至选中素材');
   }
   if (action === 'choose-output') {
-    if (!window.localPost) { toast('请选择本机输出目录'); return; }
-    window.localPost.chooseOutputDirectory().then(async path => { if (path) {
+    chooseNativeDirectory().then(async path => { if (path) {
       exportConfig.destination = path; exportSpace = null; exportDirectoryError = ''; scheduleSave();
       await checkDeliveryDirectory();
       if (page === 4) render();
-    } });
+    } }).catch(() => toast('请选择本机输出目录'));
   }
   if (action === 'start-exports') {
     if (exportSubmitting) return;
@@ -3326,9 +3417,8 @@ document.addEventListener('click', event => {
     saveStudioForm().catch(error=>toast(error.message)).finally(()=>{button.disabled=false;});
   }
   if (action === 'project-choose-location') {
-    if (!window.localPost) { toast('请选择本机输出目录');return; }
     const opened = studioForm;
-    window.localPost.chooseOutputDirectory().then(directory=>{
+    chooseNativeDirectory().then(directory=>{
       if (directory && studioForm === opened && byId('studio-form-path')) {
         opened.directory = directory;
         byId('studio-form-path').value = directory;
@@ -3464,6 +3554,7 @@ resizer.onkeydown = event => {
 byId('locale').onclick = () => {
   changeLocale(interfaceLocale === 'zh' ? 'en' : 'zh');
   localize(document.body);
+  updateThemeButton();
   updateLibraryToggle();
   renderQueue();
   render();
@@ -3475,6 +3566,8 @@ render();
 refreshExportJobs();
 api('recognition-capabilities').then(result => {
   npuRecognitionReady = result.npu === true;
+  if (result.platform === 'darwin') isMacPlatform = true;
+  if (result.default_caption_font) defaultCaptionFontName = result.default_caption_font;
   if (page === 3) render();
 }).catch(() => {});
 api('modern-codecs').then(result => { modernCodecs = result; }).catch(() => {});
@@ -3499,7 +3592,11 @@ api('studios').then(catalog => {
     document.body.classList.toggle('reduce-motion', reduceMotion);
   }
   if (previewResolutions.includes(state.previewResolution)) previewResolution = state.previewResolution;
-  if (typeof state.darkMode === 'boolean') darkMode = state.darkMode;
+  if (state.themeMode === 'auto' || state.themeMode === 'dark' || state.themeMode === 'light') {
+    themeMode = state.themeMode;
+  } else if (typeof state.darkMode === 'boolean' && !localStorage.getItem('local-post-theme-mode')) {
+    themeMode = 'auto';
+  }
   applyTheme();
   serial = Math.max(serial, state.serial || 0);
   batchSerial = state.batchSerial || 0;

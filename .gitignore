@@ -1,0 +1,22 @@
+# macOS & OS artifacts
+.DS_Store
+._*
+
+# Python runtime & caches
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+pydeps/
+
+# Built app bundles & local working data
+*.app/
+*.dmg
+work/
+
+# Native media binaries (distributed separately)
+tools/ffmpeg/ffmpeg
+tools/ffmpeg/ffmpeg.exe
+tools/vvc/
+tools/avm/
+runtime/

@@ -1,6 +1,4 @@
 import json
-import ctypes
-from ctypes import wintypes
 import faulthandler
 import math
 import os
@@ -20,34 +18,41 @@ from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+from platform_mac import (
+    IS_MAC, bootstrap_pydeps, caption_font_names, data_root,
+    default_caption_font, find_ffmpeg, subprocess_kwargs, system_usage,
+)
+bootstrap_pydeps(ROOT)
+
 from transcode_jobs import ExportQueue
 from color_presets import install_vendor_lut, public_presets
 from workspace_previews import WorkspacePreviews
 from npu_asr import recognize_npu, runtime_ready
 
-ROOT = Path(__file__).resolve().parent
+WORK = data_root(ROOT)
 UI = ROOT / '界面'
+sys.path.insert(0, str(WORK / 'speech_tools'))
 sys.path.insert(0, str(ROOT / 'work/speech_tools'))
 MODELS = {'base': 'base', 'medium': 'medium-en', 'turbo': 'turbo'}
 TOKEN = secrets.token_urlsafe(32)
 recognition_lock = threading.Lock()
 project_lock = threading.RLock()
-PROJECTS = ROOT / 'work/projects'
-STUDIO_STATE = ROOT / 'work/studio-project.json'
-STUDIOS = ROOT / 'work/studios'
-STUDIO_CATALOG = ROOT / 'work/studio-catalog'
-MEDIA_LOCATIONS = ROOT / 'work/media-locations'
-RECENT_STUDIO = ROOT / 'work/recent-studio.txt'
-DELIVERY_PRESETS = ROOT / 'work/delivery-presets.json'
+PROJECTS = WORK / 'projects'
+STUDIO_STATE = WORK / 'studio-project.json'
+STUDIOS = WORK / 'studios'
+STUDIO_CATALOG = WORK / 'studio-catalog'
+MEDIA_LOCATIONS = WORK / 'media-locations'
+RECENT_STUDIO = WORK / 'recent-studio.txt'
+DELIVERY_PRESETS = WORK / 'delivery-presets.json'
 LEGACY_ROOTS = {
     'work': ROOT.parent.parent / 'work/projects',
     'packaged': ROOT.parent.parent / 'outputs/采访工作台-项目保存版/work/projects',
 }
 copy_slots = threading.Semaphore(1)
 probe_slots = threading.Semaphore(2)
-resource_lock = threading.Lock()
-previous_cpu = None
 
 
 def valid_id(identifier):
@@ -225,7 +230,7 @@ def restore_studio(stream, length):
     STUDIOS.mkdir(exist_ok=True)
     identifier = secrets.token_hex(16)
     created = []
-    with TemporaryDirectory(prefix='studio-transfer-',dir=ROOT/'work') as folder:
+    with TemporaryDirectory(prefix='studio-transfer-', dir=WORK) as folder:
         staging = Path(folder)
         bundle = staging/'incoming'
         try:
@@ -305,49 +310,6 @@ def restore_studio(stream, length):
     return identifier
 
 
-@lru_cache(maxsize=1)
-def caption_font_names():
-    if os.name != 'nt':
-        return []
-    powershell = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
-    script = ("[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); "
-              "Add-Type -AssemblyName System.Drawing; "
-              "$fonts=New-Object System.Drawing.Text.InstalledFontCollection; "
-              "try { foreach ($family in $fonts.Families) { $family.Name } } finally { $fonts.Dispose() }")
-    result = subprocess.run([str(powershell), '-NoProfile', '-NonInteractive', '-Command', script],
-                            capture_output=True, text=True, encoding='utf-8', timeout=8,
-                            creationflags=subprocess.CREATE_NO_WINDOW, check=True)
-    return sorted({name for name in result.stdout.splitlines() if name and len(name) <= 120 and ',' not in name},
-                  key=str.casefold)
-
-
-class MemoryStatus(ctypes.Structure):
-    _fields_ = [('length', wintypes.DWORD), ('load', wintypes.DWORD)] + [
-        (name, ctypes.c_ulonglong) for name in (
-            'total_phys', 'avail_phys', 'total_page', 'avail_page',
-            'total_virtual', 'avail_virtual', 'avail_extended_virtual')
-    ]
-
-
-def system_usage():
-    global previous_cpu
-    with resource_lock:
-        kernel = ctypes.windll.kernel32
-        idle, system, user = (wintypes.FILETIME() for _ in range(3))
-        cpu = None
-        if kernel.GetSystemTimes(ctypes.byref(idle), ctypes.byref(system), ctypes.byref(user)):
-            idle_ticks, system_ticks, user_ticks = [
-                (value.dwHighDateTime << 32) | value.dwLowDateTime for value in (idle, system, user)
-            ]
-            total = system_ticks + user_ticks
-            if previous_cpu and total > previous_cpu[0]:
-                cpu = round(100 * (1 - (idle_ticks - previous_cpu[1]) / (total - previous_cpu[0])))
-                cpu = min(100, max(0, cpu))
-            previous_cpu = (total, idle_ticks)
-        memory = MemoryStatus()
-        memory.length = ctypes.sizeof(memory)
-        load = memory.load if kernel.GlobalMemoryStatusEx(ctypes.byref(memory)) else None
-        return {'cpu': cpu, 'memory': load}
 thumbnail_slots = threading.Semaphore(1)
 compute_lock = threading.Lock()
 export_queue = None
@@ -426,10 +388,18 @@ def probe_media(source):
         result = subprocess.run(
             [sys.executable, '-I', '-B', '-u', '-X', 'utf8', __file__, '--probe-worker'],
             input=str(source), capture_output=True, text=True, encoding='utf-8',
-            timeout=30, creationflags=subprocess.CREATE_NO_WINDOW)
+            timeout=30, **subprocess_kwargs())
     if result.returncode:
         raise ValueError('无法读取媒体信息，请检查文件是否完整。')
     return json.loads(result.stdout)
+
+
+def find_whisper_model(selected):
+    name = MODELS[selected]
+    for base in (WORK / 'models' / name, ROOT / 'work/models' / name):
+        if (base / 'tokenizer.json').is_file():
+            return base
+    return None
 
 
 def recognize(source, selected, language, interval, progress=lambda message: None, audio_track=0, backend='cpu'):
@@ -443,7 +413,7 @@ def recognize(source, selected, language, interval, progress=lambda message: Non
     finally:
         faulthandler.cancel_dump_traceback_later()
 
-    command = [str(ROOT / 'tools/ffmpeg/ffmpeg.exe'), '-v', 'error', '-nostdin', '-threads', '2']
+    command = [find_ffmpeg(ROOT, 'ffmpeg'), '-v', 'error', '-nostdin', '-threads', '2']
     if interval:
         start, end = interval
         command += ['-ss', str(start)]
@@ -453,8 +423,7 @@ def recognize(source, selected, language, interval, progress=lambda message: Non
     command += ['-map', f'0:a:{audio_track}', '-ac', '1', '-ar', '16000', '-f', 'f32le', '-']
     extract_started = time.perf_counter()
     progress('正在提取音轨…')
-    audio = subprocess.run(command, capture_output=True, timeout=300,
-                           creationflags=subprocess.CREATE_NO_WINDOW)
+    audio = subprocess.run(command, capture_output=True, timeout=300, **subprocess_kwargs())
     if audio.returncode or not audio.stdout:
         raise ValueError('无法读取音轨，或所选时间段没有音频。')
     samples = np.frombuffer(audio.stdout, dtype='<f4')
@@ -463,13 +432,13 @@ def recognize(source, selected, language, interval, progress=lambda message: Non
     if backend == 'npu':
         if selected != 'base':
             raise ValueError('NPU 实验仅支持 Whisper Base。')
-        result = recognize_npu(ROOT,samples,language,offset,progress)
+        result = recognize_npu(ROOT, samples, language, offset, progress)
         result['timings']['extract_seconds'] = extract_seconds
         return result
     progress('正在准备模型…')
-    path = ROOT / 'work/models' / MODELS[selected]
-    if not (path / 'tokenizer.json').is_file():
-        raise ValueError('本地模型文件不完整。')
+    path = find_whisper_model(selected)
+    if path is None:
+        raise ValueError(f'本地模型未就绪，请先运行「下载Whisper模型.command」或将模型放到 {WORK / "models" / MODELS[selected]}。')
     started = time.perf_counter()
     model = WhisperModel(str(path), device='cpu', compute_type='int8',
                          local_files_only=True, cpu_threads=max(1, min(6, (os.cpu_count() or 2) - 1)))
@@ -499,11 +468,11 @@ def run_worker(source, selected, language, interval, send_event, audio_track=0, 
         env = dict(os.environ, OPENBLAS_NUM_THREADS='1', HF_HUB_OFFLINE='1')
         arguments = json.dumps([str(source), selected, language, interval, audio_track, backend])
         # Pass JSON via stdin so Windows command-line quoting never alters paths.
-        with (ROOT / 'work/recognition.log').open('wb') as diagnostics:
+        with (WORK / 'recognition.log').open('wb') as diagnostics:
             worker = subprocess.Popen(
                 [sys.executable, '-I', '-B', '-u', '-X', 'utf8', __file__, '--recognition-worker'],
                 env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=diagnostics,
-                text=True, encoding='utf-8', creationflags=subprocess.CREATE_NO_WINDOW)
+                text=True, encoding='utf-8', **subprocess_kwargs())
             try:
                 worker.stdin.write(arguments)
                 worker.stdin.close()
@@ -596,7 +565,12 @@ class Handler(BaseHTTPRequestHandler):
             if self.headers.get('X-Workbench-Token') != TOKEN:
                 self.send_error(403)
                 return
-            self.json_reply({'npu':runtime_ready(ROOT)})
+            self.json_reply({
+                'npu': runtime_ready(ROOT),
+                'platform': sys.platform,
+                'default_caption_font': default_caption_font(),
+                'models': {key: find_whisper_model(key) is not None for key in MODELS},
+            })
             return
         if parsed.path == '/api/caption-fonts':
             if self.headers.get('X-Workbench-Token') != TOKEN:
@@ -617,7 +591,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.headers.get('X-Workbench-Token') != TOKEN:
                 self.send_error(403)
                 return
-            self.json_reply(system_usage() if os.name == 'nt' else {'cpu': None, 'memory': None})
+            self.json_reply(system_usage())
             return
         if parsed.path == '/api/modern-codecs':
             self.json_reply(export_queue.modern_codecs())
@@ -639,9 +613,9 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 source = export_queue.output(query['id'][0])
                 result = subprocess.run([
-                    str(ROOT / 'tools/ffmpeg/ffmpeg.exe'), '-v', 'error', '-nostdin',
+                    find_ffmpeg(ROOT, 'ffmpeg'), '-v', 'error', '-nostdin',
                     '-i', str(source), '-map', '0:s:0', '-c:s', 'webvtt', '-f', 'webvtt', 'pipe:1',
-                ], capture_output=True, timeout=20, creationflags=subprocess.CREATE_NO_WINDOW)
+                ], capture_output=True, timeout=20, **subprocess_kwargs())
                 if result.returncode or not result.stdout.startswith(b'WEBVTT'):
                     self.send_error(422, 'Cannot read embedded subtitles')
                     return
@@ -706,11 +680,11 @@ class Handler(BaseHTTPRequestHandler):
                 with thumbnail_slots:
                     if not target.is_file():
                         result = subprocess.run([
-                            str(ROOT / 'tools/ffmpeg/ffmpeg.exe'), '-v', 'error', '-nostdin',
+                            find_ffmpeg(ROOT, 'ffmpeg'), '-v', 'error', '-nostdin',
                             '-threads', '1', '-i', str(source), '-map', '0:v:0',
                             '-frames:v', '1', '-vf', 'scale=480:-2', '-threads', '1',
                             '-f', 'image2pipe', '-vcodec', 'mjpeg', 'pipe:1'
-                        ], capture_output=True, timeout=30, creationflags=subprocess.CREATE_NO_WINDOW)
+                        ], capture_output=True, timeout=30, **subprocess_kwargs())
                         if result.returncode or not result.stdout or len(result.stdout) > 4 * 1024 * 1024:
                             raise ValueError('无法提取缩略图。')
                         temporary = directory / ('thumbnail-' + secrets.token_hex(8) + '.tmp')
@@ -936,8 +910,32 @@ class Handler(BaseHTTPRequestHandler):
                         state['studio_name'] = name
                 self.json_reply({'output':package_studio(state,data['directory'],data.get('media') is True)})
                 return
+            if parsed.path == '/api/choose-directory':
+                if not IS_MAC:
+                    self.json_reply({'path': None})
+                    return
+                res = subprocess.run(
+                    ['osascript', '-e', 'POSIX path of (choose folder with prompt "选择目录")'],
+                    capture_output=True, text=True, encoding='utf-8', timeout=120,
+                )
+                chosen = res.stdout.strip().rstrip('/') if res.returncode == 0 else ''
+                self.json_reply({'path': chosen or None})
+                return
+            if parsed.path == '/api/open-directory':
+                if not 0 < length <= 16384:
+                    raise ValueError('路径请求无效。')
+                data = json.loads(self.rfile.read(length))
+                directory = data.get('directory')
+                if not isinstance(directory, str) or not Path(directory).is_absolute() or not Path(directory).is_dir():
+                    raise ValueError('无效路径。')
+                if IS_MAC:
+                    subprocess.run(['open', directory], check=False)
+                    self.json_reply({'ok': True})
+                else:
+                    raise ValueError('当前平台不支持从浏览器打开目录。')
+                return
             if parsed.path == '/api/studio-restore':
-                if length <= 0 or length > shutil.disk_usage(ROOT/'work').free:
+                if length <= 0 or length > shutil.disk_usage(WORK).free:
                     raise ValueError('项目包为空或保存空间不足。')
                 self.json_reply({'id':restore_studio(self.rfile,length)})
                 return
@@ -1209,10 +1207,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(audio_track, int) or not 0 <= audio_track < 128:
                     raise ValueError('音轨选择无效。')
                 audio = subprocess.run([
-                    str(ROOT / 'tools/ffmpeg/ffmpeg.exe'), '-v', 'error', '-nostdin',
+                    find_ffmpeg(ROOT, 'ffmpeg'), '-v', 'error', '-nostdin',
                     '-i', str(source), '-map', f'0:a:{audio_track}', '-ac', '1', '-ar', '16000',
                     '-b:a', '48k', '-f', 'mp3', '-'
-                ], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                ], capture_output=True, **subprocess_kwargs())
                 if audio.returncode or not audio.stdout:
                     raise ValueError('无法生成可播放的音轨。')
                 self.reply(audio.stdout, 'audio/mpeg')

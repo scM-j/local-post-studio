@@ -142,7 +142,10 @@ function bindColorPreview(video, clip, settings, redrawWave, playButton) {
             context.putImageData(frame,0,0);
             canvas.hidden = false;
             if (!completeFrame) {
-              const route = translate(decoder === 'qsv' ? 'Quick Sync 硬解' : 'CPU 解码');
+              const route = translate(
+                decoder === 'videotoolbox' ? 'VideoToolbox 硬解' :
+                decoder === 'qsv' ? 'Quick Sync 硬解' : 'CPU 解码'
+              );
               quality.textContent = width + '×' + height + ' · ' +
                 (live ? fps + ' ' + translate('帧/秒') : translate('暂停画面')) + ' · ' + route + ' · ' + qualityNote();
               completeFrame = true;
@@ -160,7 +163,7 @@ function bindColorPreview(video, clip, settings, redrawWave, playButton) {
       }
       if (!completeFrame && !current.signal.aborted) throw Error('no converted frame');
       if (current.signal.aborted) return;
-      if (live && decoder === 'qsv' && start + number / fps < duration - .35 && !video.ended) {
+      if (live && (decoder === 'qsv' || decoder === 'videotoolbox') && start + number / fps < duration - .35 && !video.ended) {
         forceSoftware = true;
         waitForConvertedPlayback();
       } else if (!live && auto && !fullFrame && (width < video.videoWidth || height < video.videoHeight) && video.paused) {
@@ -168,7 +171,7 @@ function bindColorPreview(video, clip, settings, redrawWave, playButton) {
       }
     } catch (error) {
       if (current.signal.aborted) return;
-      if (live && decoder === 'qsv' && !forceSoftware) {
+      if (live && (decoder === 'qsv' || decoder === 'videotoolbox') && !forceSoftware) {
         forceSoftware = true;
         waitForConvertedPlayback();
         return;

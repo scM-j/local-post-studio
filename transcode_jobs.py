@@ -13,8 +13,9 @@ import threading
 import time
 from pathlib import Path
 from color_presets import HDR_PROFILES, validate_color, write_transform
-from hardware_encoding import (MODES as ENCODER_MODES, PROFILES as HARDWARE_PROFILES,
+from hardware_encoding import (HARDWARE_ENGINES, MODES as ENCODER_MODES, PROFILES as HARDWARE_PROFILES,
     HardwareEncoderProbe, HardwareEncodingError, encoder_args, output_tags, tag_filter, tag_flags, verify_encoding)
+from platform_mac import data_root, default_caption_font, find_ffmpeg, subprocess_kwargs
 
 PROFILES = {'ProRes 422 Proxy': 'proxy', 'ProRes 422 LT': 'lt',
             'ProRes 422': 'standard', 'ProRes 422 HQ': 'hq',
@@ -41,10 +42,10 @@ AV2_PROFILES = ('AV2','AV2 8-bit')
 @lru_cache(maxsize=8)
 def executable_support(path, modified, option, expected):
     try:
-        result = subprocess.run([str(path),option],stdin=subprocess.DEVNULL,capture_output=True,
-                                timeout=8,creationflags=subprocess.CREATE_NO_WINDOW)
+        result = subprocess.run([str(path), option], stdin=subprocess.DEVNULL, capture_output=True,
+                                timeout=8, **subprocess_kwargs())
         return expected in result.stdout + result.stderr
-    except (OSError,subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired):
         return False
 SHARE_PROFILES = {'H.264 8-bit 4:2:0': ('libx264', 'yuv420p'),
                   'H.264 10-bit 4:2:2': ('libx264', 'yuv422p10le'),
@@ -84,7 +85,7 @@ def srt_text(rows, duration=None):
 
 
 def write_positioned_captions(ffmpeg, assets, job, video):
-    font = job.get('caption_font') or 'Microsoft YaHei'
+    font = job.get('caption_font') or default_caption_font()
     x, y = job.get('caption_position') or (.5, .91)
     play_height = 288
     play_width = max(1, round(play_height * video['width'] / video['height']))
@@ -93,7 +94,7 @@ def write_positioned_captions(ffmpeg, assets, job, video):
     converted = subprocess.run([ffmpeg, '-v', 'error', '-nostdin', '-f', 'srt', '-i', 'caption.srt',
                                 '-c:s', 'ass', '-f', 'ass', 'pipe:1'],
                                cwd=assets, capture_output=True, encoding='utf-8',
-                               creationflags=subprocess.CREATE_NO_WINDOW, timeout=15)
+                               timeout=15, **subprocess_kwargs())
     if converted.returncode:
         raise ValueError('无法准备烧录字幕：' + converted.stderr.strip())
     lines = []
@@ -236,7 +237,8 @@ class ExportQueue:
         self.root, self.project_dir, self.read_project = root, project_dir, read_project
         self.probe, self.compute_lock = probe, compute_lock
         self.hardware = HardwareEncoderProbe(root,probe)
-        self.path = root / 'work' / 'export-jobs.json'
+        self.work_root = data_root(root)
+        self.path = self.work_root / 'export-jobs.json'
         self.lock = threading.RLock()
         self.pending = queue.Queue()
         self.processes = {}
@@ -318,15 +320,15 @@ class ExportQueue:
         return self.hardware.resolve(mode,profile,output_tags(color,source_video))
 
     def modern_codecs(self):
-        tools = self.root / 'tools'
         def supports(path, option, expected):
             try:
-                return executable_support(path,path.stat().st_mtime_ns,option,expected)
+                p = Path(path)
+                return executable_support(p, p.stat().st_mtime_ns, option, expected)
             except OSError:
                 return False
-        vvc = supports(tools/'vvc/ffmpeg.exe','-encoders',b' libvvenc ')
-        av2 = supports(tools/'avm/avmenc.exe','--help',b'--ivf')
-        return {**dict.fromkeys(VVC_PROFILES,vvc), **dict.fromkeys(AV2_PROFILES,av2)}
+        vvc = supports(find_ffmpeg(self.root, 'vvc'), '-encoders', b' libvvenc ')
+        av2 = supports(find_ffmpeg(self.root, 'avm'), '--help', b'--ivf')
+        return {**dict.fromkeys(VVC_PROFILES, vvc), **dict.fromkeys(AV2_PROFILES, av2)}
 
     def submit(self, data):
         if self.load_error:
@@ -532,7 +534,7 @@ class ExportQueue:
             generation = job.get('preview_generation')
         if not isinstance(generation, str) or not re.fullmatch('[0-9a-f]{16}', generation):
             raise ValueError('预览编号无效。')
-        path = self.root / 'work' / 'previews' / identifier / generation / (side + '.mp4')
+        path = self.work_root / 'previews' / identifier / generation / (side + '.mp4')
         if not path.is_file():
             raise ValueError('预览文件不存在。')
         return path
@@ -557,7 +559,7 @@ class ExportQueue:
                 if not job or self.stopping:
                     return
                 job['preview_state'] = '运行中'; self._save()
-            folder = self.root / 'work' / 'previews' / identifier / job['preview_generation']
+            folder = self.work_root / 'previews' / identifier / job['preview_generation']
             try:
                 folder.mkdir(parents=True, exist_ok=True)
                 sources = {'source': self.project_dir(job['media_id']) / 'media', 'output': self.output(identifier)}
@@ -570,7 +572,7 @@ class ExportQueue:
                     if temporary.exists():
                         raise ValueError('上次中断的预览临时文件仍存在：' + str(temporary))
                     try:
-                        command = [str(self.root / 'tools/ffmpeg/ffmpeg.exe'), '-v', 'error', '-nostdin', '-n',
+                        command = [find_ffmpeg(self.root, 'ffmpeg'), '-v', 'error', '-nostdin', '-n',
                                    '-threads', '2', '-i', str(source), '-map', '0:v:0', '-an', '-c:v', 'libx264',
                                    '-preset', 'veryfast', '-crf', '24', '-pix_fmt', 'yuv420p', '-threads', '2',
                                    '-fps_mode', 'passthrough', '-movflags', '+faststart', str(temporary)]
@@ -578,7 +580,7 @@ class ExportQueue:
                             if self.stopping:
                                 raise ValueError('程序正在关闭。')
                             process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                                       stderr=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
+                                                       stderr=subprocess.PIPE, **subprocess_kwargs())
                             self.processes['preview-' + identifier] = process
                         _, error = process.communicate()
                         with self.lock: self.processes.pop('preview-' + identifier, None)
@@ -612,7 +614,7 @@ class ExportQueue:
                 except HardwareEncodingError as exc:
                     with self.lock:
                         job = self._get(identifier)
-                        if (job.get('encoder_mode') != 'auto' or job.get('encoder_engine') not in ('qsv','nvenc','amf')
+                        if (job.get('encoder_mode') != 'auto' or job.get('encoder_engine') not in HARDWARE_ENGINES
                                 or job['state'] != '运行中' or self.stopping):
                             raise
                         job.update(state='排队', encoder_engine='cpu', encoder_reason=str(exc), progress=None,
@@ -666,7 +668,7 @@ class ExportQueue:
             requested_threads = job.get('threads', 'auto')
             threads = max(1, min(10, (os.cpu_count() or 2) - 2)) if requested_threads == 'auto' else requested_threads
             mode = job.get('subtitle_mode', 'none')
-            assets = self.root / 'work' / 'export-assets' / identifier
+            assets = self.work_root / 'export-assets' / identifier
             assets.mkdir(parents=True, exist_ok=True)
             if mode != 'none':
                 duration = info['video'].get('duration') or info.get('duration')
@@ -675,7 +677,7 @@ class ExportQueue:
                 job.get('transcode',True) or job.get('color') or mode == 'burn')
             av2 = kind == 'video' and job['profile'] in AV2_PROFILES
             av2_depth = 8 if job['profile'] == 'AV2 8-bit' else 10
-            command = [str(self.root / ('tools/vvc/ffmpeg.exe' if vvc else 'tools/ffmpeg/ffmpeg.exe')), '-hide_banner', '-v', 'error', '-nostdin',
+            command = [find_ffmpeg(self.root, 'vvc' if vvc else 'ffmpeg'), '-hide_banner', '-v', 'error', '-nostdin',
                        '-n', '-threads', str(threads), '-i', str(source)]
             if mode == 'soft':
                 command += ['-f', 'srt', '-i', 'caption.srt']
@@ -685,7 +687,7 @@ class ExportQueue:
             color = job.get('color')
             encode = job.get('transcode', True) or mode == 'burn' or bool(color)
             engine = job.get('encoder_engine', 'cpu')
-            hardware = kind == 'video' and encode and engine in ('qsv','nvenc','amf')
+            hardware = kind == 'video' and encode and engine in HARDWARE_ENGINES
             compression = job.get('target_size_mb') is not None
             verify_spec = hardware or (kind == 'video' and encode and (compression or job['profile'].startswith('AV1')))
             tags = output_tags(color,info.get('video'))
@@ -738,7 +740,7 @@ class ExportQueue:
                     write_positioned_captions(command[0], assets, job, video)
                     caption_file = 'caption.ass'
                 else:
-                    style = 'FontName=Microsoft YaHei' + (',' + style if style else '')
+                    style = f'FontName={default_caption_font()}' + (',' + style if style else '')
                 if job.get('caption_size', 100) != 100:
                     font_size = 16 * job['caption_size'] / 100
                     style = ','.join(filter(None, (style, f'FontSize={font_size:g}')))
@@ -792,10 +794,10 @@ class ExportQueue:
                 command[-3:] = ['-f','yuv4mpegpipe','input.y4m']
                 command[command.index('-pix_fmt'):command.index('-pix_fmt')] = ['-strict','-1']
                 first_pass = command
-                command = [str(self.root/'tools/avm/avmenc.exe'),'--ivf','--passes=1','--end-usage=q',
+                command = [find_ffmpeg(self.root, 'avm'),'--ivf','--passes=1','--end-usage=q',
                            '--qp=160','--cpu-used=6',f'--bit-depth={av2_depth}',f'--input-bit-depth={av2_depth}',
                            f'--threads={threads}', '-o',str(temporary),'input.y4m']
-            log = self.root / 'work' / ('export-' + identifier + '.log')
+            log = self.work_root / ('export-' + identifier + '.log')
             try:
                 with log.open('wb') as diagnostics:
                     passes = [first_pass,command] if first_pass else [command]
@@ -805,7 +807,7 @@ class ExportQueue:
                                 job.update(state='已取消', message='已取消'); self._save(); return
                             process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                                        stderr=diagnostics, text=True, encoding='utf-8', errors='replace',
-                                                       creationflags=subprocess.CREATE_NO_WINDOW, cwd=str(assets))
+                                                       cwd=str(assets), **subprocess_kwargs())
                             self.processes[identifier] = process
                         duration = info.get('duration') or 0
                         for line in process.stdout:
@@ -907,7 +909,15 @@ class ExportQueue:
                 if os.name == 'nt':
                     os.rename(temporary, output)
                 else:
-                    os.link(temporary, output)
+                    try:
+                        os.link(temporary, output)
+                    except OSError as exc:
+                        # exFAT / FAT32 volumes on macOS do not support hard links (ENOTSUP / EPERM).
+                        if isinstance(exc, FileExistsError):
+                            raise
+                        if output.exists():
+                            raise FileExistsError(str(output))
+                        os.rename(temporary, output)
                 return output
             except FileExistsError:
                 if job['collision'] == 'skip':

@@ -4,6 +4,7 @@ import re
 import tempfile
 from functools import lru_cache
 from pathlib import Path
+from platform_mac import data_root
 
 
 def preset(id, group, gamut, curve, brand='', *, ready=True, note='', asset=None, output_only=False):
@@ -240,7 +241,15 @@ def encode(curve, x):
 
 def vendor_asset(preset):
     name = preset.get('asset')
-    return Path(__file__).resolve().parent / 'work' / 'color-luts' / name if name else None
+    if not name:
+        return None
+    writable = data_root(Path(__file__).resolve().parent) / 'color-luts' / name
+    if writable.is_file():
+        return writable
+    bundled = Path(__file__).resolve().parent / 'work' / 'color-luts' / name
+    if bundled.is_file():
+        return bundled
+    return writable
 
 
 def public_presets():
